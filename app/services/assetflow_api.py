@@ -30,9 +30,17 @@ def _get_client() -> httpx.AsyncClient:
                 "x-organization-id": str(settings.assetflow_org_id),
                 "Content-Type": "application/json",
             },
-            timeout=30.0,
+            timeout=httpx.Timeout(30.0, connect=5.0),
         )
     return _client
+
+
+async def close_client() -> None:
+    """Close the shared client during application shutdown."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
 
 
 # ---------------------------------------------------------------------------
