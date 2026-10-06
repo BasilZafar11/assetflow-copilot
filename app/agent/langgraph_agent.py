@@ -72,62 +72,6 @@ async def search_available_assets(search: str | None = None, category_name: str 
 
 
 @tool
-async def get_user_assets(assetflow_user_id: int) -> str:
-    """Get all assets currently allocated to a specific user by their AssetFlow user ID."""
-    assets = await api.list_assets(status=None)
-    if not assets:
-        return "No assets found."
-
-    user_assets = [a for a in assets if a.get("current_holder_id") == assetflow_user_id and a.get("status") == "Allocated"]
-    if not user_assets:
-        return "No assets currently allocated to this user."
-
-    lines = [f"User has {len(user_assets)} allocated asset(s):\n"]
-    for a in user_assets:
-        cat = a.get("Category")
-        lines.append(
-            f"• **{a['name']}** ({a['tag']}) — "
-            f"Category: {cat['name'] if cat else 'N/A'}, "
-            f"Condition: {a.get('condition', 'N/A')}, "
-            f"Location: {a.get('location', 'N/A')}"
-        )
-    return "\n".join(lines)
-
-
-@tool
-async def get_overdue_assets() -> str:
-    """Get all overdue asset allocations (assets past their expected return date)."""
-    data = await api.get_overdue_allocations()
-    if not data:
-        return "No overdue allocations found."
-
-    lines = [f"Found {len(data)} overdue allocation(s):\n"]
-    for al in data:
-        asset = al.get("Asset", {})
-        user = al.get("User", {})
-        lines.append(
-            f"• **{asset.get('name', '?')}** ({asset.get('tag', '?')}) — "
-            f"Held by: {user.get('name', '?')}, "
-            f"Due: {al.get('expected_return_date', '?')}"
-        )
-    return "\n".join(lines)
-
-
-@tool
-async def create_allocation(asset_tag: str, user_id: int, return_date: str | None = None, notes: str | None = None) -> str:
-    """Allocate an asset to a user. Only call after manager approval. Returns confirmation or error."""
-    result = await api.allocate_asset(
-        asset_tag=asset_tag,
-        assigned_to_user_id=user_id,
-        expected_return_date=return_date,
-        notes=notes,
-    )
-    if not result:
-        return "Allocation failed. Asset may be unavailable or user invalid."
-    return f"Allocation successful. {result.get('message', 'Asset assigned.')}"
-
-
-@tool
 async def report_hardware_issue(asset_tag: str, issue_description: str, priority: str = "High") -> str:
     """Report a hardware issue or damage for an asset. Use this when a user complains about a broken or malfunctioning asset."""
     result = await api.report_hardware_issue(
@@ -142,7 +86,7 @@ async def report_hardware_issue(asset_tag: str, issue_description: str, priority
 
 # ── Agent State ──────────────────────────────────────────────────────────────
 
-TOOLS = [lookup_asset, search_available_assets, get_user_assets, get_overdue_assets, create_allocation, report_hardware_issue]
+TOOLS = [lookup_asset, search_available_assets, report_hardware_issue]
 
 SYSTEM_PROMPT = """You are **AssetFlow Copilot**, a highly intelligent, proactive, and slightly witty IT asset management assistant inside Slack.
 
