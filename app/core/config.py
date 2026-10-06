@@ -28,6 +28,17 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///./agent_local.db", alias="DATABASE_URL"
     )
 
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    overdue_check_interval_seconds: int = Field(
+        default=3600, ge=60, alias="OVERDUE_CHECK_INTERVAL_SECONDS"
+    )
+    overdue_reminder_cooldown_hours: int = Field(
+        default=24, ge=1, alias="OVERDUE_REMINDER_COOLDOWN_HOURS"
+    )
+    enable_overdue_worker: bool = Field(
+        default=True, alias="ENABLE_OVERDUE_WORKER"
+    )
+
     class Config:
         env_file = ".env"
         populate_by_name = True
