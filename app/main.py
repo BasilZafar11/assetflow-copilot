@@ -49,6 +49,12 @@ async def health():
     return {"status": "ok", "service": "assetflow-copilot"}
 
 
+@app.get("/healthz")
+async def healthz():
+    """Lightweight liveness endpoint; external dependencies are not probed."""
+    return {"status": "ok"}
+
+
 @app.post("/slack/events")
 async def slack_events(request: Request):
     return await handler.handle(request)
