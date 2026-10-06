@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -63,7 +64,7 @@ def _as_list(payload: Any) -> list[dict[str, Any]] | None:
 async def get_asset(tag: str) -> dict[str, Any] | None:
     """GET /api/assets/{tag} — single asset by tag."""
     try:
-        resp = await _get_client().get(f"/api/assets/{tag}")
+        resp = await _get_client().get(f"/api/assets/{quote(tag, safe='')}")
         resp.raise_for_status()
         return resp.json()
     except Exception:
