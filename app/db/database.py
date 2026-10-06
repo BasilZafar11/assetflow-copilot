@@ -51,6 +51,16 @@ class AssetRequest(Base):
     )
 
 
+class OverdueReminder(Base):
+    __tablename__ = "overdue_reminders"
+
+    allocation_key: Mapped[str] = mapped_column(String, primary_key=True)
+    notified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 engine = create_async_engine(get_settings().database_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 async_session = AsyncSessionLocal  # alias
