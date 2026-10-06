@@ -43,6 +43,18 @@ async def close_client() -> None:
     _client = None
 
 
+def _as_list(payload: Any) -> list[dict[str, Any]] | None:
+    """Accept the API's plain-list and common paginated response shapes."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("data", "items", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+    return None
+
+
 # ---------------------------------------------------------------------------
 # API helpers
 # ---------------------------------------------------------------------------
@@ -75,7 +87,7 @@ async def list_assets(
     try:
         resp = await _get_client().get("/api/assets", params=params)
         resp.raise_for_status()
-        return resp.json()
+        return _as_list(resp.json())
     except Exception:
         logger.exception("list_assets failed")
         return None
@@ -92,8 +104,9 @@ async def get_my_allocations(user_id: int) -> list[dict[str, Any]] | None:
             "/api/allocations", params={"status": "Active"}
         )
         resp.raise_for_status()
-        data = resp.json()
-        allocations = data if isinstance(data, list) else data.get("data", data)
+        allocations = _as_list(resp.json())
+        if allocations is None:
+            return None
         return [
             a
             for a in allocations
@@ -133,7 +146,7 @@ async def get_overdue_allocations() -> list[dict[str, Any]] | None:
     try:
         resp = await _get_client().get("/api/allocations/overdue")
         resp.raise_for_status()
-        return resp.json()
+        return _as_list(resp.json())
     except Exception:
         logger.exception("get_overdue_allocations failed")
         return None
@@ -144,7 +157,7 @@ async def get_categories() -> list[dict[str, Any]] | None:
     try:
         resp = await _get_client().get("/api/categories")
         resp.raise_for_status()
-        return resp.json()
+        return _as_list(resp.json())
     except Exception:
         logger.exception("get_categories failed")
         return None
@@ -155,7 +168,7 @@ async def get_members() -> list[dict[str, Any]] | None:
     try:
         resp = await _get_client().get("/api/org/members")
         resp.raise_for_status()
-        return resp.json()
+        return _as_list(resp.json())
     except Exception:
         logger.exception("get_members failed")
         return None
@@ -170,7 +183,7 @@ async def login(email: str, password: str) -> dict[str, Any] | None:
         resp.raise_for_status()
         return resp.json()
     except Exception:
-        logger.exception("login failed for email=%s", email)
+        logger.exception("login failed")
         return None
 
 async def request_transfer(
@@ -306,23 +319,10 @@ async def get_departments() -> list[dict[str, Any]] | None:
     try:
         resp = await _get_client().get("/api/departments")
         resp.raise_for_status()
-        return resp.json()
+        return _as_list(resp.json())
     except Exception:
         logger.exception("get_departments failed")
         return None
-
-async def get_members() -> list[dict[str, Any]] | None:
-    """GET /api/org/members."""
-    try:
-        resp = await _get_client().get("/api/org/members")
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        logger.exception("get_members failed")
-        return None
-
-
-
 
 async def link_slack_account(email: str, slack_user_id: str) -> dict[str, Any] | None:
     """POST /api/auth/link-slack"""
