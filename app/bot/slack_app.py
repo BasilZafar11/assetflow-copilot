@@ -619,6 +619,15 @@ async def handle_confirm_request(ack, body, client: AsyncWebClient):
     channel = body["channel"]["id"]
     ts = body["message"]["ts"]
 
+    if not slack_workspace_id:
+        await client.chat_update(
+            channel=channel,
+            ts=ts,
+            text="Could not identify the Slack workspace. Please try again.",
+            blocks=[],
+        )
+        return
+
     mapping = await get_user_mapping(slack_user_id, slack_workspace_id)
     if not mapping:
         await client.chat_update(
