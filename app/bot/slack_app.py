@@ -111,7 +111,15 @@ async def save_user_mapping(
 
 
 async def get_tenant(slack_workspace_id: str):
-    return None
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(TenantMapping).where(
+                TenantMapping.slack_workspace_id == slack_workspace_id
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 async def save_request(slack_user_id: str, slack_workspace_id: str, af_user_id: int, asset_tag: str, asset_name: str, notes: str = None) -> AssetRequest:
