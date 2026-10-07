@@ -486,7 +486,10 @@ async def handle_home_tab(event: dict, client: AsyncWebClient):
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(AssetRequest)
-                .where(AssetRequest.slack_user_id == slack_user_id)
+                .where(
+                    AssetRequest.slack_user_id == slack_user_id,
+                    AssetRequest.slack_workspace_id == slack_workspace_id,
+                )
                 .order_by(AssetRequest.created_at.desc())
                 .limit(5)
             )
@@ -845,7 +848,14 @@ async def handle_reject(ack, body, client: AsyncWebClient):
 async def handle_refresh_home(ack, body, client: AsyncWebClient):
     """Refresh Home Tab."""
     await ack()
-    await handle_home_tab({"user": body["user"]["id"]}, client)
+    await handle_home_tab(
+        {
+            "user": body["user"]["id"],
+            "team": body.get("team"),
+            "team_id": body.get("team_id"),
+        },
+        client,
+    )
 
 
 @app.action("return_overdue")
