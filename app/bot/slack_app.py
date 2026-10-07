@@ -34,25 +34,21 @@ class MockUserMapping:
         self.email = email
 
 async def get_user_mapping(slack_user_id: str) -> MockUserMapping | None:
-    logger.info(f"[DEBUG] get_user_mapping called for Slack user: {slack_user_id}")
-    
     async def find_match(members_list):
         for m in members_list:
-            u = m.get("User")
-            if u:
-                db_slack_id = u.get("slack_user_id")
-                if db_slack_id == slack_user_id:
-                    return MockUserMapping(u["id"], u["email"])
+            u = m.get("User") or m
+            if u.get("slack_user_id") == slack_user_id:
+                if u.get("id") is not None:
+                    return MockUserMapping(u["id"], u.get("email", ""))
         return None
 
     members = await api.get_members()
     if not members:
-        logger.error("[DEBUG] api.get_members() returned None or empty list")
+        logger.warning("Unable to resolve Slack identity because members are unavailable")
         return None
 
     match = await find_match(members)
     if match:
-        logger.info(f"[DEBUG] Match found for user_id={match.assetflow_user_id}")
         return match
 
     # If no match, try to fetch email from Slack profile and auto-link
@@ -60,21 +56,19 @@ async def get_user_mapping(slack_user_id: str) -> MockUserMapping | None:
         client = AsyncWebClient(token=settings.slack_bot_token)
         profile_resp = await client.users_info(user=slack_user_id)
         if profile_resp.get("ok") and "user" in profile_resp:
-            email = profile_resp["user"]["profile"].get("email")
+            email = profile_resp["user"].get("profile", {}).get("email")
             if email:
-                logger.info(f"[DEBUG] Attempting to auto-link Slack User {slack_user_id} with email {email}")
                 link_res = await api.link_slack_account(email, slack_user_id)
                 if link_res:
-                    logger.info(f"[DEBUG] Auto-linked successfully! Re-fetching members...")
                     updated_members = await api.get_members()
                     if updated_members:
                         match = await find_match(updated_members)
                         if match:
                             return match
-    except Exception as e:
-        logger.error(f"[DEBUG] Error during Slack email auto-mapping: {e}")
+    except Exception:
+        logger.warning("Slack account auto-link failed")
 
-    logger.warning(f"[DEBUG] No match found in DB for Slack user: {slack_user_id}")
+    logger.info("No AssetFlow mapping found for Slack user")
     return None
 
 
