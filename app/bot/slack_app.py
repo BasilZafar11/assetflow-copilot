@@ -12,7 +12,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
 from app.core.config import settings
-from app.db.database import AsyncSessionLocal, AssetRequest
+from app.db.database import AsyncSessionLocal, AssetRequest, TenantMapping, UserMapping
 from app.agent.langgraph_agent import run_agent
 from app.services import assetflow_api as api
 
@@ -28,18 +28,32 @@ import re
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-class MockUserMapping:
+def get_slack_workspace_id(payload: dict) -> str | None:
+    team = payload.get("team")
+    if isinstance(team, dict):
+        team = team.get("id")
+    return payload.get("team_id") or team
+
+class AssetFlowUserMapping:
     def __init__(self, af_id, email):
         self.assetflow_user_id = af_id
         self.email = email
 
-async def get_user_mapping(slack_user_id: str) -> MockUserMapping | None:
+async def get_user_mapping(
+    slack_user_id: str, slack_workspace_id: str | None
+) -> AssetFlowUserMapping | None:
+    if not slack_user_id or not slack_workspace_id:
+        return None
+
     async def find_match(members_list):
         for m in members_list:
             u = m.get("User") or m
             if u.get("slack_user_id") == slack_user_id:
+                linked_workspace = u.get("slack_workspace_id") or m.get("slack_workspace_id")
+                if linked_workspace and linked_workspace != slack_workspace_id:
+                    continue
                 if u.get("id") is not None:
-                    return MockUserMapping(u["id"], u.get("email", ""))
+                    return AssetFlowUserMapping(u["id"], u.get("email", ""))
         return None
 
     members = await api.get_members()
@@ -49,6 +63,7 @@ async def get_user_mapping(slack_user_id: str) -> MockUserMapping | None:
 
     match = await find_match(members)
     if match:
+        await save_user_mapping(slack_user_id, slack_workspace_id, match)
         return match
 
     # If no match, try to fetch email from Slack profile and auto-link
@@ -64,12 +79,35 @@ async def get_user_mapping(slack_user_id: str) -> MockUserMapping | None:
                     if updated_members:
                         match = await find_match(updated_members)
                         if match:
+                            await save_user_mapping(slack_user_id, slack_workspace_id, match)
                             return match
     except Exception:
         logger.warning("Slack account auto-link failed")
 
     logger.info("No AssetFlow mapping found for Slack user")
     return None
+
+
+async def save_user_mapping(
+    slack_user_id: str, slack_workspace_id: str, mapping: AssetFlowUserMapping
+) -> None:
+    """Persist a verified API link for workspace-scoped reminder delivery."""
+    from sqlalchemy.exc import IntegrityError
+
+    async with AsyncSessionLocal() as session:
+        session.add(
+            UserMapping(
+                slack_user_id=slack_user_id,
+                slack_workspace_id=slack_workspace_id,
+                assetflow_user_id=mapping.assetflow_user_id,
+                email=mapping.email or "",
+            )
+        )
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Two Slack events can discover the same link concurrently.
+            await session.rollback()
 
 
 async def get_tenant(slack_workspace_id: str):
@@ -345,14 +383,15 @@ def build_overdue_dm(asset_name: str, asset_tag: str, due_date: str) -> list[dic
 async def handle_mention(event: dict, say, client: AsyncWebClient):
     """Handle @AssetFlowAgent mentions — route through LangGraph."""
     slack_user_id = event.get("user", "")
+    slack_workspace_id = get_slack_workspace_id(event)
     text = event.get("text", "")
     # Strip bot mention from text
     text = " ".join(w for w in text.split() if not w.startswith("<@"))
 
-    mapping = await get_user_mapping(slack_user_id)
+    mapping = await get_user_mapping(slack_user_id, slack_workspace_id)
     context = ""
     if mapping:
-        context = f"Slack user {slack_user_id} maps to AssetFlow user_id={mapping.assetflow_user_id}, email={mapping.email}."
+        context = f"Slack user {slack_user_id} maps to AssetFlow user_id={mapping.assetflow_user_id}."
 
     # Check if user asking for available assets -> use Block Kit
     text_lower = text.lower()
@@ -361,7 +400,7 @@ async def handle_mention(event: dict, say, client: AsyncWebClient):
     audit_match = re.search(r'start an audit for\s+(.+)', text_lower, re.IGNORECASE)
     if audit_match:
         dept_name = audit_match.group(1).strip().strip(".?!")
-        await start_bot_auditor(slack_user_id, dept_name, say, client)
+        await start_bot_auditor(slack_user_id, slack_workspace_id, dept_name, say, client)
         return
 
     needs_asset = any(kw in text_lower for kw in ["need", "want", "request", "get me", "looking for", "require"])
@@ -427,7 +466,8 @@ async def handle_mention(event: dict, say, client: AsyncWebClient):
 async def handle_home_tab(event: dict, client: AsyncWebClient):
     """Render Home Tab with user's assets and pending requests."""
     slack_user_id = event.get("user", "")
-    mapping = await get_user_mapping(slack_user_id)
+    slack_workspace_id = get_slack_workspace_id(event)
+    mapping = await get_user_mapping(slack_user_id, slack_workspace_id)
 
     user_assets = []
     pending_requests = []
@@ -466,12 +506,13 @@ async def handle_dm(event: dict, say, client: AsyncWebClient):
         return
 
     slack_user_id = event.get("user", "")
+    slack_workspace_id = get_slack_workspace_id(event)
     text = event.get("text", "")
 
-    mapping = await get_user_mapping(slack_user_id)
+    mapping = await get_user_mapping(slack_user_id, slack_workspace_id)
     context = ""
     if mapping:
-        context = f"Slack user {slack_user_id} maps to AssetFlow user_id={mapping.assetflow_user_id}, email={mapping.email}."
+        context = f"Slack user {slack_user_id} maps to AssetFlow user_id={mapping.assetflow_user_id}."
 
     # Check if user asking for available assets -> use Block Kit
     text_lower = text.lower()
@@ -480,7 +521,7 @@ async def handle_dm(event: dict, say, client: AsyncWebClient):
     audit_match = re.search(r'start an audit for\s+(.+)', text_lower, re.IGNORECASE)
     if audit_match:
         dept_name = audit_match.group(1).strip().strip(".?!")
-        await start_bot_auditor(slack_user_id, dept_name, say, client)
+        await start_bot_auditor(slack_user_id, slack_workspace_id, dept_name, say, client)
         return
 
     needs_asset = any(kw in text_lower for kw in ["need", "want", "request", "get me", "looking for", "require"])
@@ -571,11 +612,11 @@ async def handle_confirm_request(ack, body, client: AsyncWebClient):
     name = data["name"]
 
     slack_user_id = body["user"]["id"]
-    slack_workspace_id = body.get("team", {}).get("id", settings.assetflow_org_id)
+    slack_workspace_id = get_slack_workspace_id(body)
     channel = body["channel"]["id"]
     ts = body["message"]["ts"]
 
-    mapping = await get_user_mapping(slack_user_id)
+    mapping = await get_user_mapping(slack_user_id, slack_workspace_id)
     if not mapping:
         await client.chat_update(
             channel=channel, ts=ts,
@@ -857,7 +898,13 @@ async def handle_show_help_menu(ack, body, client: AsyncWebClient):
 
 # ── Bot Auditor Functions ────────────────────────────────────────────────────
 
-async def start_bot_auditor(slack_user_id: str, dept_name: str, say, client: AsyncWebClient):
+async def start_bot_auditor(
+    slack_user_id: str,
+    slack_workspace_id: str | None,
+    dept_name: str,
+    say,
+    client: AsyncWebClient,
+):
     """Start an automated Slack audit for a given department."""
     await say(f"Starting an automated Slack Audit for the {dept_name.capitalize()} department... Please wait.")
     
@@ -882,7 +929,7 @@ async def start_bot_auditor(slack_user_id: str, dept_name: str, say, client: Asy
         
     cycle_id = cycle["audit_cycle"]["id"]
     
-    mapping = await get_user_mapping(slack_user_id)
+    mapping = await get_user_mapping(slack_user_id, slack_workspace_id)
     if mapping:
         members = await api.get_members()
         admin_ids = [m['User']['id'] for m in members if m.get('role') == 'Admin']
