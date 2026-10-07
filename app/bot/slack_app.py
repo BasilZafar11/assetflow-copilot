@@ -244,7 +244,7 @@ def build_confirm_block(asset_tag: str, asset_name: str) -> list[dict]:
     ]
 
 
-def build_approval_block(request_id: int, requester_name: str, asset_tag: str, asset_name: str, notes: str = None) -> list[dict]:
+def build_approval_block(request_id: int, requester_name: str, requester_slack_id: str, asset_tag: str, asset_name: str, notes: str = None) -> list[dict]:
     """Build approval card sent to #asset-approvals channel."""
     text = (
         f"*New Asset Request* (`REQ-{request_id:04d}`)\n\n"
@@ -263,14 +263,14 @@ def build_approval_block(request_id: int, requester_name: str, asset_tag: str, a
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Approve"},
                     "action_id": "approve_request",
-                    "value": json.dumps({"transfer_id": request_id, "slack_user_id": requester_name.strip("<@>")}),
+                    "value": json.dumps({"transfer_id": request_id, "slack_user_id": requester_slack_id}),
                     "style": "primary",
                 },
                 {
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Reject"},
                     "action_id": "reject_request",
-                    "value": json.dumps({"transfer_id": request_id, "slack_user_id": requester_name.strip("<@>")}),
+                    "value": json.dumps({"transfer_id": request_id, "slack_user_id": requester_slack_id}),
                     "style": "danger",
                 },
             ],
@@ -670,6 +670,19 @@ async def handle_confirm_request(ack, body, client: AsyncWebClient):
         )
         return
 
+    tenant = await get_tenant(slack_workspace_id)
+    approvals_channel = tenant.approvals_channel_id if tenant else None
+    if not approvals_channel:
+        approvals_channel = settings.slack_approvals_channel
+    if not approvals_channel:
+        await client.chat_update(
+            channel=channel,
+            ts=ts,
+            text="Asset requests are not available because no approvals channel is configured.",
+            blocks=[],
+        )
+        return
+
     # Call Backend API to create TransferRequest
     transfer_res = await api.request_transfer(
         asset_tag=tag,
@@ -677,15 +690,15 @@ async def handle_confirm_request(ack, body, client: AsyncWebClient):
         reason="Requested via Slack"
     )
 
-    if not transfer_res or "transfer_request" not in transfer_res:
+    transfer = transfer_res.get("transfer_request") if isinstance(transfer_res, dict) else None
+    transfer_id = transfer.get("id") if isinstance(transfer, dict) else None
+    if not transfer_id:
         await client.chat_update(
             channel=channel, ts=ts,
             text=f"[Error] Failed to create request. The asset may no longer be available.",
             blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": f"[Error] Failed to create request. The asset may no longer be available."}}],
         )
         return
-
-    transfer_id = transfer_res["transfer_request"]["id"]
 
     # Save request locally (mostly for App Home tab)
     req = await save_request(
@@ -717,27 +730,32 @@ async def handle_confirm_request(ack, body, client: AsyncWebClient):
         pass
 
     # Post approval card to approvals channel
-    tenant = await get_tenant(slack_workspace_id)
-    approvals_channel = tenant.approvals_channel_id if tenant else None
-    if not approvals_channel:
-        approvals_channel = settings.slack_approvals_channel
-
-    if approvals_channel:
-        approval_blocks = build_approval_block(transfer_id, requester_name, tag, name, "Requested via Slack")
+    approval_blocks = build_approval_block(
+        transfer_id, requester_name, slack_user_id, tag, name, "Requested via Slack"
+    )
+    try:
         resp = await client.chat_postMessage(
             channel=approvals_channel,
             blocks=approval_blocks,
             text=f"New asset request TRF-{transfer_id} from {requester_name}",
         )
-        # Save message_ts for later update
-        if resp.get("ok"):
-            async with AsyncSessionLocal() as session:
-                from sqlalchemy import select
-                result = await session.execute(select(AssetRequest).where(AssetRequest.id == req.id))
-                r = result.scalar_one_or_none()
-                if r:
-                    r.approval_message_ts = resp["ts"]
-                    await session.commit()
+    except Exception:
+        logger.exception("Failed to send approval card for transfer %s", transfer_id)
+        await client.chat_postMessage(
+            channel=slack_user_id,
+            text=f"Your request TRF-{transfer_id} was created, but managers could not be notified. Please contact your Asset Manager.",
+        )
+        return
+
+    # Save message_ts for later update
+    if resp.get("ok"):
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select
+            result = await session.execute(select(AssetRequest).where(AssetRequest.id == req.id))
+            saved_request = result.scalar_one_or_none()
+            if saved_request:
+                saved_request.approval_message_ts = resp["ts"]
+                await session.commit()
 
 
 @app.action("cancel_request")
