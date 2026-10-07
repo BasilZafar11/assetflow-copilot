@@ -734,13 +734,20 @@ async def handle_cancel_request(ack, body, client: AsyncWebClient):
 async def handle_approve(ack, body, client: AsyncWebClient):
     """Manager approves asset request -> call PATCH /api/allocations/transfers/:id/approve -> notify employee."""
     await ack()
-    data = json.loads(body["actions"][0]["value"])
-    transfer_id = data["transfer_id"]
-    requester_slack_id = data.get("slack_user_id")
-    
-    approver_slack_id = body["user"]["id"]
+    try:
+        data = json.loads(body["actions"][0]["value"])
+        transfer_id = int(data["transfer_id"])
+        requester_slack_id = data.get("slack_user_id")
+        approver_slack_id = body["user"]["id"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Rejected malformed approval action payload")
+        return
+
     channel = body["channel"]["id"]
     ts = body["message"]["ts"]
+
+    if transfer_id <= 0:
+        return
 
     # Call AssetFlow transfer approve API
     result = await api.approve_transfer(transfer_id)
@@ -806,13 +813,20 @@ async def handle_approve(ack, body, client: AsyncWebClient):
 async def handle_reject(ack, body, client: AsyncWebClient):
     """Manager rejects asset request."""
     await ack()
-    data = json.loads(body["actions"][0]["value"])
-    transfer_id = data["transfer_id"]
-    requester_slack_id = data.get("slack_user_id")
-    
-    rejector_slack_id = body["user"]["id"]
+    try:
+        data = json.loads(body["actions"][0]["value"])
+        transfer_id = int(data["transfer_id"])
+        requester_slack_id = data.get("slack_user_id")
+        rejector_slack_id = body["user"]["id"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Rejected malformed rejection action payload")
+        return
+
     channel = body["channel"]["id"]
     ts = body["message"]["ts"]
+
+    if transfer_id <= 0:
+        return
 
     result = await api.reject_transfer(transfer_id, reason=f"Rejected via Slack by <@{rejector_slack_id}>")
 
