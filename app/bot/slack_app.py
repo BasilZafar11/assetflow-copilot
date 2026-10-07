@@ -122,6 +122,29 @@ async def get_tenant(slack_workspace_id: str):
         return result.scalar_one_or_none()
 
 
+async def user_can_approve(
+    slack_user_id: str, slack_workspace_id: str | None
+) -> bool:
+    """Resolve the actor's role from AssetFlow; fail closed on missing data."""
+    if not slack_workspace_id:
+        return False
+    members = await api.get_members()
+    if not members:
+        return False
+    for member in members:
+        user = member.get("User") or member
+        if user.get("slack_user_id") != slack_user_id:
+            continue
+        linked_workspace = user.get("slack_workspace_id") or member.get("slack_workspace_id")
+        if linked_workspace and linked_workspace != slack_workspace_id:
+            return False
+        role = member.get("role") or user.get("role") or ""
+        if isinstance(role, dict):
+            role = role.get("name", "")
+        return str(role).strip().casefold() in {"admin", "asset manager"}
+    return False
+
+
 async def save_request(slack_user_id: str, slack_workspace_id: str, af_user_id: int, asset_tag: str, asset_name: str, notes: str = None) -> AssetRequest:
     async with AsyncSessionLocal() as session:
         req = AssetRequest(
@@ -746,7 +769,14 @@ async def handle_approve(ack, body, client: AsyncWebClient):
     channel = body["channel"]["id"]
     ts = body["message"]["ts"]
 
-    if transfer_id <= 0:
+    if transfer_id <= 0 or not await user_can_approve(
+        approver_slack_id, get_slack_workspace_id(body)
+    ):
+        await client.chat_postEphemeral(
+            channel=channel,
+            user=approver_slack_id,
+            text="Only an AssetFlow admin or asset manager can approve requests.",
+        )
         return
 
     # Call AssetFlow transfer approve API
@@ -825,7 +855,14 @@ async def handle_reject(ack, body, client: AsyncWebClient):
     channel = body["channel"]["id"]
     ts = body["message"]["ts"]
 
-    if transfer_id <= 0:
+    if transfer_id <= 0 or not await user_can_approve(
+        rejector_slack_id, get_slack_workspace_id(body)
+    ):
+        await client.chat_postEphemeral(
+            channel=channel,
+            user=rejector_slack_id,
+            text="Only an AssetFlow admin or asset manager can reject requests.",
+        )
         return
 
     result = await api.reject_transfer(transfer_id, reason=f"Rejected via Slack by <@{rejector_slack_id}>")
@@ -949,6 +986,9 @@ async def start_bot_auditor(
     client: AsyncWebClient,
 ):
     """Start an automated Slack audit for a given department."""
+    if not await user_can_approve(slack_user_id, slack_workspace_id):
+        await say("Only an AssetFlow admin or asset manager can start an audit.")
+        return
     await say(f"Starting an automated Slack Audit for the {dept_name.capitalize()} department... Please wait.")
     
     depts = await api.get_departments()
